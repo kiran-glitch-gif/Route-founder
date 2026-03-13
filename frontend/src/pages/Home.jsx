@@ -1,155 +1,197 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, lazy, Suspense } from 'react'
 import SearchBar from '../components/SearchBar'
 import BusCard from '../components/BusCard'
 import AgentChat from '../components/AgentChat'
-import { Bus, MessageCircle, X } from 'lucide-react'
+import TrackingPanel from '../components/TrackingPanel'
+import { useSocket } from '../hooks/useSocket'
+import { Bus, MessageCircle, Map, Search, Wifi, WifiOff } from 'lucide-react'
 import axios from 'axios'
 
+// Lazy load map to avoid SSR issues with Leaflet
+const LiveMap = lazy(() => import('../components/LiveMap'))
+
+const TABS = [
+    { id: 'search', label: 'Search', icon: Search },
+    { id: 'tracking', label: 'Live Tracking', icon: Map },
+    { id: 'chat', label: 'AI Agent', icon: MessageCircle },
+]
+
 function Home() {
-  const [buses, setBuses] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [showChat, setShowChat] = useState(false)
-  const [searchPerformed, setSearchPerformed] = useState(false)
+    const [activeTab, setActiveTab] = useState('search')
+    const [buses, setBuses] = useState([])
+    const [loading, setLoading] = useState(false)
+    const [selectedBus, setSelectedBus] = useState(null)
+    const { buses: liveBuses, alerts, connected, trackBus, untrackBus } = useSocket()
 
-  const handleSearch = async (searchParams) => {
-    setLoading(true)
-    setSearchPerformed(true)
-    
-    try {
-      const { from, to } = searchParams
-      const response = await axios.get(`/api/buses/search?from=${from}&to=${to}`)
-      setBuses(response.data)
-    } catch (error) {
-      console.error('Search error:', error)
-      setBuses([])
-    } finally {
-      setLoading(false)
+    const handleSearch = async ({ from, to }) => {
+        setLoading(true)
+        try {
+            const res = await axios.get(`/api/buses/search?from=${from}&to=${to}`)
+            setBuses(res.data)
+        } catch {
+            setBuses([])
+        } finally {
+            setLoading(false)
+        }
     }
-  }
 
-  const loadAllBuses = async () => {
-    setLoading(true)
-    try {
-      const response = await axios.get('/api/buses')
-      setBuses(response.data)
-      setSearchPerformed(true)
-    } catch (error) {
-      console.error('Error loading buses:', error)
-    } finally {
-      setLoading(false)
+    const handleBusSelect = (bus) => {
+        setSelectedBus(bus)
+        trackBus(bus.id)
     }
-  }
 
-  useEffect(() => {
-    loadAllBuses()
-  }, [])
+    useEffect(() => {
+        axios.get('/api/buses').then(r => setBuses(r.data)).catch(() => {})
+    }, [])
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      {/* Header */}
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Bus className="h-8 w-8 text-primary-600" />
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Bus Schedule Agent</h1>
-                <p className="text-sm text-gray-600">Smart bus finder for Tamil Nadu</p>
-              </div>
-            </div>
-            
-            <button
-              onClick={() => setShowChat(!showChat)}
-              className="flex items-center space-x-2 btn-primary"
-            >
-              <MessageCircle className="h-5 w-5" />
-              <span>Ask AI Agent</span>
-            </button>
-          </div>
-        </div>
-      </header>
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900">
+            {/* Header */}
+            <header className="bg-white/10 backdrop-blur border-b border-white/10">
+                <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-blue-500 p-2 rounded-xl">
+                            <Bus className="h-6 w-6 text-white" />
+                        </div>
+                        <div>
+                            <h1 className="text-xl font-bold text-white">Bus Schedule Agent</h1>
+                            <p className="text-xs text-blue-300">Tamil Nadu Real-Time Tracker</p>
+                        </div>
+                    </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Content */}
-          <div className="lg:col-span-2">
-            {/* Search Section */}
-            <div className="card mb-8">
-              <h2 className="text-xl font-semibold mb-4">Find Your Bus</h2>
-              <SearchBar onSearch={handleSearch} />
-            </div>
+                    <div className="flex items-center gap-3">
+                        {/* Live connection indicator */}
+                        <div className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full ${
+                            connected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                        }`}>
+                            {connected
+                                ? <><Wifi className="h-3 w-3" /> Live</>
+                                : <><WifiOff className="h-3 w-3" /> Offline</>
+                            }
+                        </div>
 
-            {/* Results Section */}
-            <div>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold">
-                  {searchPerformed ? `Available Buses (${buses.length})` : 'Loading Buses...'}
-                </h2>
-                {searchPerformed && (
-                  <button
-                    onClick={loadAllBuses}
-                    className="btn-secondary text-sm"
-                  >
-                    Show All Buses
-                  </button>
+                        {/* Alert badge */}
+                        {alerts.length > 0 && (
+                            <div className="bg-yellow-500/20 text-yellow-400 text-xs px-3 py-1.5 rounded-full">
+                                ⚠ {alerts.length} alert{alerts.length > 1 ? 's' : ''}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Tabs */}
+                <div className="max-w-7xl mx-auto px-4 flex gap-1 pb-0">
+                    {TABS.map(tab => {
+                        const Icon = tab.icon
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                                    activeTab === tab.id
+                                        ? 'bg-white text-blue-700'
+                                        : 'text-white/70 hover:text-white hover:bg-white/10'
+                                }`}
+                            >
+                                <Icon className="h-4 w-4" />
+                                {tab.label}
+                                {tab.id === 'tracking' && connected && (
+                                    <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                                )}
+                            </button>
+                        )
+                    })}
+                </div>
+            </header>
+
+            {/* Content */}
+            <div className="max-w-7xl mx-auto px-4 py-6">
+
+                {/* ── SEARCH TAB ── */}
+                {activeTab === 'search' && (
+                    <div className="space-y-6">
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <h2 className="text-lg font-semibold mb-4">Find Your Bus</h2>
+                            <SearchBar onSearch={handleSearch} />
+                        </div>
+
+                        {loading ? (
+                            <div className="flex justify-center py-12">
+                                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400"></div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <h3 className="text-white font-semibold">
+                                    {buses.length} bus{buses.length !== 1 ? 'es' : ''} found
+                                </h3>
+                                {buses.map(bus => (
+                                    <BusCard
+                                        key={bus.id}
+                                        bus={bus}
+                                        liveData={liveBuses.find(b => b.id === bus.id)}
+                                        onTrack={() => {
+                                            handleBusSelect(bus)
+                                            setActiveTab('tracking')
+                                        }}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 )}
-              </div>
 
-              {loading ? (
-                <div className="flex justify-center py-12">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-                </div>
-              ) : buses.length > 0 ? (
-                <div className="space-y-4">
-                  {buses.map((bus) => (
-                    <BusCard key={bus.id} bus={bus} />
-                  ))}
-                </div>
-              ) : searchPerformed ? (
-                <div className="text-center py-12">
-                  <Bus className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No buses found</h3>
-                  <p className="text-gray-600">Try searching for a different route or check back later.</p>
-                </div>
-              ) : null}
+                {/* ── LIVE TRACKING TAB ── */}
+                {activeTab === 'tracking' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[calc(100vh-200px)]">
+                        {/* Map */}
+                        <div className="lg:col-span-3 bg-white rounded-xl overflow-hidden shadow-lg" style={{ minHeight: '500px' }}>
+                            <Suspense fallback={
+                                <div className="flex items-center justify-center h-full bg-gray-100">
+                                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+                                </div>
+                            }>
+                                <LiveMap
+                                    buses={liveBuses}
+                                    selectedBus={selectedBus}
+                                    onBusSelect={handleBusSelect}
+                                />
+                            </Suspense>
+                        </div>
+
+                        {/* Tracking Panel */}
+                        <div className="bg-white rounded-xl shadow-lg p-4 overflow-hidden flex flex-col">
+                            <TrackingPanel
+                                buses={liveBuses}
+                                selectedBus={selectedBus}
+                                onBusSelect={handleBusSelect}
+                                alerts={alerts}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* ── AI AGENT TAB ── */}
+                {activeTab === 'chat' && (
+                    <div className="max-w-2xl mx-auto">
+                        <div className="bg-white rounded-xl shadow-lg p-6" style={{ height: '70vh' }}>
+                            <div className="flex items-center gap-3 mb-4 pb-4 border-b">
+                                <div className="bg-purple-100 p-2 rounded-xl">
+                                    <MessageCircle className="h-5 w-5 text-purple-600" />
+                                </div>
+                                <div>
+                                    <h3 className="font-semibold">AI Bus Agent</h3>
+                                    <p className="text-xs text-gray-500">Powered by Claude · Uses live bus data</p>
+                                </div>
+                            </div>
+                            <div className="h-[calc(100%-80px)]">
+                                <AgentChat />
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
-          </div>
-
-          {/* Chat Sidebar */}
-          <div className="lg:col-span-1">
-            {showChat ? (
-              <div className="card h-[600px] flex flex-col">
-                <div className="flex items-center justify-between mb-4 pb-4 border-b">
-                  <h3 className="text-lg font-semibold">AI Bus Assistant</h3>
-                  <button
-                    onClick={() => setShowChat(false)}
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-                <AgentChat />
-              </div>
-            ) : (
-              <div className="card text-center py-12">
-                <MessageCircle className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Need Help?</h3>
-                <p className="text-gray-600 mb-4">
-                  Ask our AI agent about bus routes, timings, and travel tips.
-                </p>
-                <button
-                  onClick={() => setShowChat(true)}
-                  className="btn-primary"
-                >
-                  Start Chat
-                </button>
-              </div>
-            )}
-          </div>
         </div>
-      </div>
-    </div>
-  )
+    )
 }
 
 export default Home
