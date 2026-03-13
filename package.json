@@ -1,16 +1,10 @@
 {
   "name": "bus-schedule-agent",
   "version": "1.0.0",
-  "description": "Smart bus schedule finder for Tamil Nadu with AI agent",
-  "main": "index.js",
+  "description": "Tamil Nadu Bus Schedule Agent - Backend API with real-time tracking and AI agents",
+  "main": "backend/index.js",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
-    "server": "cd backend && npm run dev",
-    "client": "cd frontend && npm run dev",
-    "build": "cd frontend && npm run build",
-    "start": "cd backend && npm start"
-  },
-  "devDependencies": {
-    "concurrently": "^8.2.2"
+    "start": "cd backend && node index.js",
+    "dev": "cd backend && npm run dev"
   }
 }

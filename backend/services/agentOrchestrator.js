@@ -2,38 +2,41 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 /**
  * Multi-Agent Orchestrator
- * Manages specialized AI agents for different tasks:
- * - TrackingAgent: Monitors bus positions and delays
- * - RouteAgent: Answers route and schedule questions
- * - AlertAgent: Sends delay/cancellation notifications
- * - PlannerAgent: Suggests optimal travel plans
+ * Runs an agentic loop: Claude calls tools → tools return live data → Claude answers.
+ *
+ * Tools available to the agent:
+ *   get_bus_location        — live GPS + status for a bus
+ *   search_buses            — find buses between two stops
+ *   get_route_stops         — intermediate stops for a bus
+ *   calculate_eta           — ETA at a specific stop
+ *   get_delay_alerts        — current delay/cancellation alerts
+ *   suggest_alternative_route — alternatives when a bus is late/cancelled
  */
 class AgentOrchestrator {
     constructor() {
         this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-        this.model = 'claude-sonnet-4-20250514';
+        this.model     = 'claude-sonnet-4-20250514';
 
-        // Define tools each agent can use
         this.tools = [
             {
                 name: 'get_bus_location',
-                description: 'Get the current real-time location and status of a specific bus',
+                description: 'Get the current real-time GPS location, speed, and status of a specific bus',
                 input_schema: {
                     type: 'object',
                     properties: {
-                        bus_id: { type: 'string', description: 'The bus ID e.g. SKV-01' }
+                        bus_id: { type: 'string', description: 'Bus ID e.g. SKV-01' }
                     },
                     required: ['bus_id']
                 }
             },
             {
                 name: 'search_buses',
-                description: 'Search for buses between two stops',
+                description: 'Search for all buses operating between two stops',
                 input_schema: {
                     type: 'object',
                     properties: {
                         from: { type: 'string', description: 'Departure stop name' },
-                        to: { type: 'string', description: 'Destination stop name' }
+                        to:   { type: 'string', description: 'Destination stop name' }
                     },
                     required: ['from', 'to']
                 }
@@ -44,7 +47,7 @@ class AgentOrchestrator {
                 input_schema: {
                     type: 'object',
                     properties: {
-                        bus_id: { type: 'string', description: 'The bus ID' }
+                        bus_id: { type: 'string', description: 'Bus ID' }
                     },
                     required: ['bus_id']
                 }
@@ -55,31 +58,31 @@ class AgentOrchestrator {
                 input_schema: {
                     type: 'object',
                     properties: {
-                        bus_id: { type: 'string', description: 'The bus ID' },
-                        stop_name: { type: 'string', description: 'The stop to calculate ETA for' }
+                        bus_id:    { type: 'string', description: 'Bus ID' },
+                        stop_name: { type: 'string', description: 'Stop name to calculate ETA for' }
                     },
                     required: ['bus_id', 'stop_name']
                 }
             },
             {
                 name: 'get_delay_alerts',
-                description: 'Get all current delay or cancellation alerts',
+                description: 'Get all current delay or cancellation alerts, optionally filtered by route',
                 input_schema: {
                     type: 'object',
                     properties: {
-                        route: { type: 'string', description: 'Optional: filter by route' }
+                        route: { type: 'string', description: 'Optional route filter e.g. "Chennai"' }
                     }
                 }
             },
             {
                 name: 'suggest_alternative_route',
-                description: 'Suggest alternative routes if a bus is delayed or cancelled',
+                description: 'Suggest alternative buses when a bus is delayed or cancelled',
                 input_schema: {
                     type: 'object',
                     properties: {
-                        from: { type: 'string' },
-                        to: { type: 'string' },
-                        avoid_bus_id: { type: 'string', description: 'Bus ID to avoid' }
+                        from:          { type: 'string', description: 'Departure stop' },
+                        to:            { type: 'string', description: 'Destination stop' },
+                        avoid_bus_id:  { type: 'string', description: 'Bus ID to avoid' }
                     },
                     required: ['from', 'to']
                 }
@@ -87,119 +90,106 @@ class AgentOrchestrator {
         ];
     }
 
-    // Execute tool calls made by the AI agent
-    async executeTool(toolName, toolInput, busTracker) {
-        switch (toolName) {
+    async _executeTool(name, input, busTracker) {
+        switch (name) {
             case 'get_bus_location': {
-                const loc = busTracker.getBusLocation(toolInput.bus_id);
-                return loc || { error: `Bus ${toolInput.bus_id} not found` };
+                const loc = busTracker.getBusLocation(input.bus_id);
+                return loc || { error: `Bus ${input.bus_id} not found` };
             }
             case 'search_buses': {
-                const buses = busTracker.searchBuses(toolInput.from, toolInput.to);
+                const buses = busTracker.searchBuses(input.from, input.to);
                 return { buses, count: buses.length };
             }
             case 'get_route_stops': {
-                const bus = busTracker.getBusLocation(toolInput.bus_id);
-                return bus ? { stops: bus.stops, current_stop: bus.currentStop } : { error: 'Bus not found' };
+                const bus = busTracker.getBusLocation(input.bus_id);
+                return bus
+                    ? { stops: bus.stops, current_stop: bus.currentStop, next_stop: bus.nextStop }
+                    : { error: 'Bus not found' };
             }
-            case 'calculate_eta': {
-                const eta = busTracker.calculateETA(toolInput.bus_id, toolInput.stop_name);
-                return eta;
-            }
+            case 'calculate_eta':
+                return busTracker.calculateETA(input.bus_id, input.stop_name);
             case 'get_delay_alerts': {
-                const alerts = busTracker.getAlerts(toolInput.route);
+                const alerts = busTracker.getAlerts(input.route);
                 return { alerts, count: alerts.length };
             }
             case 'suggest_alternative_route': {
-                const alternatives = busTracker.getAlternatives(toolInput.from, toolInput.to, toolInput.avoid_bus_id);
-                return { alternatives };
+                const alternatives = busTracker.getAlternatives(input.from, input.to, input.avoid_bus_id);
+                return { alternatives, count: alternatives.length };
             }
             default:
-                return { error: `Unknown tool: ${toolName}` };
+                return { error: `Unknown tool: ${name}` };
         }
     }
 
-    // Main agentic loop — runs until the agent produces a final answer
+    /**
+     * Agentic loop — runs until Claude produces a final text answer or hits MAX_ITERATIONS.
+     */
     async runAgent(userMessage, conversationHistory = [], busTracker, context = {}) {
-        const systemPrompt = this.buildSystemPrompt(context);
+        const systemPrompt = this._buildSystemPrompt(context);
         const messages = [
             ...conversationHistory,
             { role: 'user', content: userMessage }
         ];
 
-        let response;
-        let iterations = 0;
-        const MAX_ITERATIONS = 5;
+        let toolsUsed = 0;
+        const MAX_ITERATIONS = 6;
 
-        while (iterations < MAX_ITERATIONS) {
-            iterations++;
-
-            response = await this.anthropic.messages.create({
-                model: this.model,
+        for (let i = 0; i < MAX_ITERATIONS; i++) {
+            const response = await this.anthropic.messages.create({
+                model:      this.model,
                 max_tokens: 1500,
-                system: systemPrompt,
-                tools: this.tools,
+                system:     systemPrompt,
+                tools:      this.tools,
                 messages
             });
 
-            // If agent is done, return the text response
+            // Final answer
             if (response.stop_reason === 'end_turn') {
-                const textBlock = response.content.find(b => b.type === 'text');
-                return {
-                    response: textBlock ? textBlock.text : 'Done.',
-                    toolsUsed: messages.filter(m => m.role === 'tool').length
-                };
+                const text = response.content.find(b => b.type === 'text');
+                return { response: text ? text.text : 'Done.', toolsUsed };
             }
 
-            // Process tool calls
+            // Tool calls
             if (response.stop_reason === 'tool_use') {
-                // Add assistant's tool_use message
                 messages.push({ role: 'assistant', content: response.content });
 
-                // Execute each tool and collect results
                 const toolResults = [];
                 for (const block of response.content) {
                     if (block.type === 'tool_use') {
-                        console.log(`🤖 Agent calling tool: ${block.name}`, block.input);
-                        const result = await this.executeTool(block.name, block.input, busTracker);
+                        console.log(`🤖 Agent → ${block.name}(${JSON.stringify(block.input)})`);
+                        const result = await this._executeTool(block.name, block.input, busTracker);
                         toolResults.push({
-                            type: 'tool_result',
+                            type:        'tool_result',
                             tool_use_id: block.id,
-                            content: JSON.stringify(result)
+                            content:     JSON.stringify(result)
                         });
+                        toolsUsed++;
                     }
                 }
 
-                // Feed tool results back to agent
                 messages.push({ role: 'user', content: toolResults });
             }
         }
 
-        return { response: 'I reached the maximum number of steps. Please try a simpler query.', toolsUsed: iterations };
+        return { response: 'Reached maximum steps. Please try a simpler query.', toolsUsed };
     }
 
-    buildSystemPrompt(context) {
+    _buildSystemPrompt(context) {
         const now = new Date();
         return `You are a smart Tamil Nadu bus tracking AI agent with real-time data access.
 Current time: ${now.toLocaleTimeString('en-IN')} | Date: ${now.toLocaleDateString('en-IN')}
 
-You have access to tools to:
-- Look up live bus locations and status
-- Search bus routes
-- Calculate ETAs
-- Get delay alerts
-- Suggest alternative routes
+You have tools to look up live bus locations, search routes, calculate ETAs, get delay alerts, and suggest alternatives.
 
 Rules:
-- Always use tools to get real data before answering
-- Show bus format: BUS_ID - DEPARTURE_TIME (e.g. SKV-01 - 9:00 PM)
-- Include live status (on-time/late/cancelled) with every bus mention
-- If a bus is late, proactively suggest alternatives
+- Always call tools to get real data before answering — never guess
+- Show every bus as: BUS_ID - DEPARTURE_TIME  (e.g. SKV-01 - 9:00 PM)
+- Include live status (on-time / late / cancelled) with every bus
+- If a bus is late, proactively suggest alternatives using the tool
+- Show fare in ₹ (rupees)
 - Be concise and friendly
 - Respond in the user's language (Tamil or English)
-- Show fare in ₹ (rupees)
-
-${context.from ? `User context: Tracking route from ${context.from} to ${context.to}` : ''}`;
+${context.from ? `\nUser context: route from ${context.from} to ${context.to}` : ''}`;
     }
 }
 
